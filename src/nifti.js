@@ -4,6 +4,8 @@
 
 "use strict";
 
+const NIFTI1 = require('./nifti1.js');
+
 /*** Imports ***/
 
 /**
@@ -182,6 +184,92 @@ nifti.readImage = function (header, data) {
     return data.slice(imageOffset, imageOffset + imageSize);
 };
 
+/**
+ * Returns true if image is planar. 
+ * @param {nifti.NIFTI1|nifti.NIFTI2} header
+ * @param {ArrayBuffer} data
+ * @returns {boolean}
+ */
+nifti.isPlanar = function(header, data) {
+    if(header.dims[2] < 2) return false; //requires at least 2 rows of data
+    var incPlanar = header.dims[1]; //increment next row of PLANAR image
+    var incPacked = header.dims[1] * 3; //increment next row of PACKED image
+    var byteSlice = incPacked * header.dims[2]; //bytes per 3D slice of RGB data
+    var dxPlanar = 0.0;
+    var dxPacked = 0.0;
+    var pos = header.dims[3]/2 * byteSlice; //offset to middle slice for 3D data
+    var niftiImage = nifti.readImage(header, data);
+    var rgbData = new Uint8Array(niftiImage);
+    var posEnd = pos + byteSlice - incPacked;
+    while (pos < posEnd) {
+        dxPlanar += abs(rgbData[pos]-rgbData[pos+incPlanar]);
+        dxPacked += abs(rgbData[pos]-rgbData[pos+incPacked]);
+        pos++;
+    }
+
+    return (dxPlanar < dxPacked);
+}
+
+/**
+ * Returns converted 24 bit RBG data array to 32 bit RGBA array
+ * @param {nifti.NIFTI1|nifti.NIFTI2} header 
+ * @param {ArrayBuffer} data 
+ * @returns {ArrayBuffer}
+ */
+nifti.convert2RGBA = function(header, data) {
+    if(header.datatypeCode != nifti.NIFTI1.TYPE_RGB24) {
+        return data;
+    }
+    
+    var voxCount = header.dims[1] * header.dims[2] * header.dims[3];
+    var rgbaData = new Uint8Array(voxCount * 4); 
+    var isPlanar = nifti.isPlanar(header, data);
+
+    var nx = header.dims[1];
+    var ny = header.dims[2];
+    var nz = header.dims[3];
+
+    var o = 0;
+
+    var niftiImage = nifti.readImage(header, data);
+    var rgbData = new Uint8Array(niftiImage);
+    if(!isPlanar) {
+        var i = 0;
+        for(var vx = 0; vx < voxCount; vx++) {
+            rgbaData[o++] = rgbData[i++]; //red
+            rgbaData[o++] = rgbData[i++]; //green
+            rgbaData[o++] = rgbData[i++]; //blue
+            rgbaData[o++] = rgbData[i-2] / 2; //green best estimate for alpha
+        }
+    }
+    else {
+        var nxy = nx*ny; //number of voxels in a plane
+        var nxy3 = nxy*3; //size for group of RGB planes
+        var sliceR =0;
+        var sliceG =nxy;
+        var sliceB = nxy+nxy;
+        var row = 0;
+        for (var vol= 0; vol < nvol; vol++) {
+            for (var z = 0; z < nz; z++) { //for each slice
+                row = 0; //start of row
+                for (var y = 0; y < ny; y++) { //for each row
+                    for (var x = 0; x < nx; x++) { //for each column
+                        rgbaData[o++] = rgbData[sliceR+row+x];
+                        rgbaData[o++] = rgbData[sliceG+row+x];
+                        rgbaData[o++] = rgbData[sliceB+row+x];
+                        rgbaData[o++] = rgbData[sliceG+row+x] /2; //green best estimate for alpha   666 2016
+                    } //for each x
+                    row = row + nx;
+                } //for each y
+                sliceR = sliceR + nxy3; //start of red plane
+                sliceG = sliceG + nxy3; //start of green plane
+                sliceB = sliceB + nxy3; //start of blue plane
+            } //for each z
+        }
+    }
+
+    return rgbaData;
+}
 
 
 /**
